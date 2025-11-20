@@ -18,3 +18,7 @@ pip install -r requirements.txt
 
 # 6. 執行 Streamlit
 streamlit run app.py
+
+pip install kaleido==0.2.1
+
+streamlit run app.py

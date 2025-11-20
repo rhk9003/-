@@ -16,7 +16,7 @@ def load_and_clean_data(file):
         # 嘗試讀取 CSV
         df = pd.read_csv(file)
         
-        # 數值化處理
+        # 定義需要數值化的欄位
         numeric_cols = [
             'CTR（連結點閱率）', '曝光次數', '連結點擊次數', 
             '連結頁面瀏覽次數', 'CPM（每千次廣告曝光成本）', '花費金額 (TWD)'
@@ -34,14 +34,15 @@ def load_and_clean_data(file):
             df[col] = df[col].apply(clean_val)
             
         # 計算 LP View Rate (品質指標)
-        # 避免分母為 0
+        # 需同時有 '連結頁面瀏覽次數' 與 '連結點擊次數' 才能計算
         if '連結頁面瀏覽次數' in df.columns and '連結點擊次數' in df.columns:
             df['LP_View_Rate'] = df.apply(
                 lambda row: row['連結頁面瀏覽次數'] / row['連結點擊次數'] if row['連結點擊次數'] > 0 else 0, axis=1
             )
         else:
-            st.error("缺少關鍵欄位：需包含 '連結頁面瀏覽次數' 與 '連結點擊次數'")
-            return None
+            # 若欄位不足，不阻擋程式執行，但無法計算此指標
+            st.warning("注意：CSV 缺少 '連結頁面瀏覽次數' 或 '連結點擊次數'，將無法計算品質比率。")
+            df['LP_View_Rate'] = 0
 
         # 過濾極低流量雜訊 (預設 > 10 曝光才納入分析)
         df_clean = df[df['曝光次數'] > 10].copy()
@@ -55,9 +56,4 @@ def load_and_clean_data(file):
 st.sidebar.title("⚙️ 鑑識參數設定")
 
 st.sidebar.subheader("1. 幽靈點擊偵測 (Ghost Clicks)")
-threshold_ctr_high = st.sidebar.slider("CTR 異常高標 (%)", 2.0, 15.0, 4.0, 0.5)
-threshold_quality_low = st.sidebar.slider("落地頁瀏覽率 低標 (Quality < X)", 0.1, 1.0, 0.5, 0.1)
-
-st.sidebar.subheader("2. 展示灌水偵測 (Flooding)")
-percentile_imp = st.sidebar.slider("高曝光定義 (PR值)", 50, 99, 75, 5)
-threshold_ctr_low = st.sidebar.slider("CTR 異常低標 (%)", 0.1, 3.0, 1.5, 0.1
+# 修正處：確保這一行有閉合

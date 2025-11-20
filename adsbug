@@ -1,126 +1,63 @@
+import streamlit as st
 import pandas as pd
-import matplotlib.pyplot as plt
-import seaborn as sns
-import numpy as np
+import plotly.express as px
 
-# 設定中文字型，以免圖表亂碼 (Windows 使用 'Microsoft JhengHei', Mac 使用 'Arial Unicode MS')
-plt.rcParams['font.sans-serif'] = ['Microsoft JhengHei'] 
-plt.rcParams['axes.unicode_minus'] = False
+# --- 頁面基本設定 ---
+st.set_page_config(
+    page_title="流量異常鑑識儀表板",
+    page_icon="🕵️‍♂️",
+    layout="wide"
+)
 
-def clean_numeric(x):
-    """
-    資料清洗函數：
-    處理 Meta 報表中常見的格式，如 "1,234" (字串轉數字)、"-" (轉為 0)
-    """
-    if isinstance(x, str):
-        x = x.replace(',', '').replace('%', '')
-        if x.strip() == '-':
-            return 0
-    return pd.to_numeric(x, errors='coerce')
-
-def detect_anomalies(file_path):
-    print(f"正在讀取檔案: {file_path}...")
-    
-    # 1. 讀取與前處理
+# --- 核心邏輯：資料清洗與計算 ---
+@st.cache_data
+def load_and_clean_data(file):
     try:
-        df = pd.read_csv(file_path)
+        # 嘗試讀取 CSV
+        df = pd.read_csv(file)
+        
+        # 數值化處理
+        numeric_cols = [
+            'CTR（連結點閱率）', '曝光次數', '連結點擊次數', 
+            '連結頁面瀏覽次數', 'CPM（每千次廣告曝光成本）', '花費金額 (TWD)'
+        ]
+        
+        def clean_val(x):
+            if isinstance(x, str):
+                x = x.replace(',', '').replace('%', '')
+                if x.strip() == '-': return 0
+            return pd.to_numeric(x, errors='coerce')
+
+        # 檢查欄位是否存在並清洗
+        available_cols = [c for c in numeric_cols if c in df.columns]
+        for col in available_cols:
+            df[col] = df[col].apply(clean_val)
+            
+        # 計算 LP View Rate (品質指標)
+        # 避免分母為 0
+        if '連結頁面瀏覽次數' in df.columns and '連結點擊次數' in df.columns:
+            df['LP_View_Rate'] = df.apply(
+                lambda row: row['連結頁面瀏覽次數'] / row['連結點擊次數'] if row['連結點擊次數'] > 0 else 0, axis=1
+            )
+        else:
+            st.error("缺少關鍵欄位：需包含 '連結頁面瀏覽次數' 與 '連結點擊次數'")
+            return None
+
+        # 過濾極低流量雜訊 (預設 > 10 曝光才納入分析)
+        df_clean = df[df['曝光次數'] > 10].copy()
+        return df_clean
+
     except Exception as e:
-        print(f"讀取錯誤: {e}")
-        return
+        st.error(f"檔案讀取錯誤: {e}")
+        return None
 
-    # 定義需要數值化的關鍵欄位 (請根據您的報表實際欄位名稱調整)
-    numeric_cols = [
-        'CTR（連結點閱率）', '曝光次數', '連結點擊次數', 
-        '連結頁面瀏覽次數', 'CPM（每千次廣告曝光成本）'
-    ]
-    
-    # 檢查欄位是否存在
-    missing_cols = [col for col in numeric_cols if col not in df.columns]
-    if missing_cols:
-        print(f"警告：找不到以下欄位，請檢查 CSV 欄位名稱: {missing_cols}")
-        return
+# --- 側邊欄：參數控制 ---
+st.sidebar.title("⚙️ 鑑識參數設定")
 
-    for col in numeric_cols:
-        df[col] = df[col].apply(clean_numeric)
-    
-    # 過濾掉極小流量的雜訊 (例如曝光 < 50)
-    df_clean = df[df['曝光次數'] > 50].copy()
-    
-    # 計算關鍵指標：落地頁瀏覽率 (Quality Ratio)
-    # 避免分母為 0
-    df_clean['LP_View_Rate'] = df_clean.apply(
-        lambda row: row['連結頁面瀏覽次數'] / row['連結點擊次數'] if row['連結點擊次數'] > 0 else 0, axis=1
-    )
+st.sidebar.subheader("1. 幽靈點擊偵測 (Ghost Clicks)")
+threshold_ctr_high = st.sidebar.slider("CTR 異常高標 (%)", 2.0, 15.0, 4.0, 0.5)
+threshold_quality_low = st.sidebar.slider("落地頁瀏覽率 低標 (Quality < X)", 0.1, 1.0, 0.5, 0.1)
 
-    # ---------------------------------------------------------
-    # 2. 核心偵測邏輯 (Anomaly Detection Logic)
-    # ---------------------------------------------------------
-    
-    # [邏輯 A] 幽靈點擊 (Ghost Clicks): 高 CTR 但低到頁率
-    # 閾值設定：CTR > 4% 且 到頁率 < 50%
-    ghost_clicks = df_clean[
-        (df_clean['CTR（連結點閱率）'] > 4) & 
-        (df_clean['LP_View_Rate'] < 0.5)
-    ].sort_values(by='CTR（連結點閱率）', ascending=False)
-
-    # [邏輯 B] 展示灌水 (Impression Flooding): 極高曝光但低 CTR
-    # 閾值設定：曝光大於 PR75 (前 25% 高流量) 且 CTR < 1.5%
-    high_imp_threshold = df_clean['曝光次數'].quantile(0.75)
-    flooding = df_clean[
-        (df_clean['曝光次數'] > high_imp_threshold) & 
-        (df_clean['CTR（連結點閱率）'] < 1.5)
-    ].sort_values(by='曝光次數', ascending=False)
-
-    # ---------------------------------------------------------
-    # 3. 輸出報告
-    # ---------------------------------------------------------
-    print("\n" + "="*50)
-    print("🚨 [異常偵測 A] 疑似幽靈點擊/機器人 (High CTR, Low Quality)")
-    print("="*50)
-    if not ghost_clicks.empty:
-        cols_show = ['天數', '廣告名稱', '曝光次數', '連結點擊次數', '連結頁面瀏覽次數', 'CTR（連結點閱率）', 'LP_View_Rate']
-        print(ghost_clicks[cols_show].to_string(index=False))
-    else:
-        print("未發現顯著異常。")
-
-    print("\n" + "="*50)
-    print(f"🚨 [異常偵測 B] 疑似展示灌水 (Impression Flooding, Imp > {int(high_imp_threshold)})")
-    print("="*50)
-    if not flooding.empty:
-        cols_show = ['天數', '廣告名稱', '曝光次數', 'CTR（連結點閱率）', 'CPM（每千次廣告曝光成本）']
-        print(flooding[cols_show].to_string(index=False))
-    else:
-        print("未發現顯著異常。")
-
-    # ---------------------------------------------------------
-    # 4. 視覺化診斷圖 (保存為圖片)
-    # ---------------------------------------------------------
-    plt.figure(figsize=(14, 6))
-
-    # 左圖：品質診斷
-    plt.subplot(1, 2, 1)
-    sns.scatterplot(data=df_clean, x='連結點擊次數', y='連結頁面瀏覽次數', 
-                    hue='CTR（連結點閱率）', size='曝光次數', sizes=(20, 200), palette='viridis')
-    # 畫出 1:1 完美轉換線
-    limit = df_clean['連結點擊次數'].max()
-    plt.plot([0, limit], [0, limit], 'r--', label='1:1 Perfect Line')
-    plt.title('點擊品質診斷 (偏離紅線越遠越危險)')
-    plt.legend()
-
-    # 右圖：流量診斷
-    plt.subplot(1, 2, 2)
-    sns.scatterplot(data=df_clean, x='曝光次數', y='CTR（連結點閱率）', 
-                    hue='LP_View_Rate', palette='RdYlGn', size='CPM（每千次廣告曝光成本）', sizes=(20, 200))
-    plt.axhline(y=1.5, color='orange', linestyle='--', label='Low CTR Alert (1.5%)')
-    plt.title('展示與 CTR 分布 (右下角為灌水高風險區)')
-    plt.legend()
-
-    plt.tight_layout()
-    plt.savefig('ad_anomaly_report.png')
-    print("\n✅ 視覺化圖表已保存為 'ad_anomaly_report.png'")
-
-# --- 使用方式 ---
-# 請將 '分析用20251119.csv' 替換成您實際的檔案名稱
-if __name__ == "__main__":
-    file_name = '分析用20251119.csv' 
-    detect_anomalies(file_name)
+st.sidebar.subheader("2. 展示灌水偵測 (Flooding)")
+percentile_imp = st.sidebar.slider("高曝光定義 (PR值)", 50, 99, 75, 5)
+threshold_ctr_low = st.sidebar.slider("CTR 異常低標 (%)", 0.1, 3.0, 1.5, 0.1

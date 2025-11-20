@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from io import BytesIO
+import streamlit.components.v1 as components
 
 # --- 頁面基本設定 ---
 st.set_page_config(
@@ -44,50 +44,11 @@ def load_and_clean_data(file):
         st.error(f"檔案讀取錯誤: {e}")
         return None
 
-# --- Excel 生成邏輯 (新功能) ---
-def generate_excel(ghost_df, flood_df, params_dict):
-    output = BytesIO()
-    # 使用 xlsxwriter 引擎來支援格式設定
-    with pd.ExcelWriter(output, engine='xlsxwriter') as writer:
-        
-        # Sheet 1: 異常A (幽靈點擊)
-        if not ghost_df.empty:
-            cols_ghost = ['天數', '廣告名稱', '曝光次數', '連結點擊次數', '連結頁面瀏覽次數', 'CTR（連結點閱率）', 'LP_View_Rate']
-            ghost_df[cols_ghost].to_excel(writer, sheet_name='異常A_幽靈點擊', index=False)
-        else:
-            pd.DataFrame({'訊息': ['無符合條件的資料']}).to_excel(writer, sheet_name='異常A_幽靈點擊', index=False)
-
-        # Sheet 2: 異常B (展示灌水)
-        if not flood_df.empty:
-            cols_flood = ['天數', '廣告名稱', '曝光次數', 'CTR（連結點閱率）', 'CPM（每千次廣告曝光成本）', '花費金額 (TWD)']
-            flood_df[cols_flood].to_excel(writer, sheet_name='異常B_展示灌水', index=False)
-        else:
-            pd.DataFrame({'訊息': ['無符合條件的資料']}).to_excel(writer, sheet_name='異常B_展示灌水', index=False)
-
-        # Sheet 3: 分析參數紀錄
-        param_df = pd.DataFrame(list(params_dict.items()), columns=['參數名稱', '設定值'])
-        param_df.to_excel(writer, sheet_name='分析參數紀錄', index=False)
-
-        # --- 格式美化 (Auto-adjust columns width) ---
-        workbook = writer.book
-        # 定義百分比格式
-        percent_fmt = workbook.add_format({'num_format': '0.00%'})
-        
-        for sheet_name in writer.sheets:
-            worksheet = writer.sheets[sheet_name]
-            # 設定欄寬
-            worksheet.set_column('A:A', 15) # 日期
-            worksheet.set_column('B:B', 40) # 廣告名稱 (寬一點)
-            worksheet.set_column('C:Z', 12) # 其他數據
-            
-            # 嘗試對特定欄位套用百分比格式 (簡單對應)
-            # 注意：xlsxwriter 套用格式較複雜，這裡做基礎寬度調整即可，數據本身已是數值
-
-    output.seek(0)
-    return output
-
 # --- 側邊欄：參數控制 ---
 st.sidebar.title("⚙️ 鑑識參數設定")
+
+# 加入列印按鈕的說明
+st.sidebar.info("💡 想要保存報告？\n點擊右側主畫面的「列印」按鈕，並在目的地選擇「另存為 PDF」。")
 
 st.sidebar.subheader("1. 幽靈點擊偵測 (Ghost Clicks)")
 threshold_ctr_high = st.sidebar.slider("CTR 異常高標 (%)", 2.0, 15.0, 4.0, 0.5)
@@ -98,8 +59,31 @@ percentile_imp = st.sidebar.slider("高曝光定義 (PR值)", 50, 99, 75, 5)
 threshold_ctr_low = st.sidebar.slider("CTR 異常低標 (%)", 0.1, 3.0, 1.5, 0.1)
 
 # --- 主畫面 ---
-st.title("🕵️‍♂️ 廣告流量異常鑑識系統")
-st.markdown("上傳 CSV 報表，自動診斷流量異常，並支援 **一鍵匯出 Excel 報告**。")
+col_title, col_btn = st.columns([3, 1])
+with col_title:
+    st.title("🕵️‍♂️ 廣告流量異常鑑識系統")
+with col_btn:
+    st.write("") # Spacer
+    st.write("")
+    # 嵌入 JavaScript 按鈕來觸發瀏覽器列印
+    components.html(
+        """
+        <button onclick="window.parent.print()" style="
+            background-color: #FF4B4B; 
+            color: white; 
+            padding: 10px 24px; 
+            border: none; 
+            border-radius: 4px; 
+            cursor: pointer; 
+            font-size: 16px; 
+            font-weight: bold;">
+            🖨️ 列印 / 存為 PDF
+        </button>
+        """,
+        height=50
+    )
+
+st.markdown("上傳 CSV 報表，自動診斷流量異常。")
 
 uploaded_file = st.file_uploader("請上傳 CSV 報表檔案", type=['csv'])
 
@@ -121,7 +105,6 @@ if uploaded_file is not None:
 
         # --- 繪圖區 ---
         if not df.empty:
-            # 圖表僅供網頁瀏覽，Excel 只輸出數據
             fig_ghost = px.scatter(
                 df, x='連結點擊次數', y='連結頁面瀏覽次數', size='曝光次數', color='CTR（連結點閱率）',
                 hover_data=['廣告名稱', '天數', 'LP_View_Rate'], title='點擊 vs. 到頁診斷', color_continuous_scale='Bluered'
@@ -157,32 +140,5 @@ if uploaded_file is not None:
         if not flooding.empty:
             st.dataframe(flooding[['天數', '廣告名稱', '曝光次數', 'CTR（連結點閱率）', 'CPM（每千次廣告曝光成本）']].style.format({'CTR（連結點閱率）': '{:.2f}%', 'CPM（每千次廣告曝光成本）': '{:.2f}'}))
 
-        # --- 匯出按鈕區 ---
-        st.markdown("---")
-        st.header("📥 匯出報告")
-        st.write("點擊下方按鈕，將當前的異常名單下載為 Excel 報表。")
-        
-        # 收集當前參數
-        current_params = {
-            'CTR 異常高標': f"{threshold_ctr_high}%",
-            '落地頁瀏覽率 低標': f"{int(threshold_quality_low*100)}%",
-            '高曝光定義 (PR值)': f"PR{percentile_imp}",
-            'CTR 異常低標': f"{threshold_ctr_low}%"
-        }
-
-        if st.button('生成 Excel 分析報表'):
-            with st.spinner('正在生成 Excel 中...'):
-                try:
-                    excel_file = generate_excel(ghost_clicks, flooding, current_params)
-                    
-                    st.download_button(
-                        label="⬇️ 下載 Excel 檔案 (.xlsx)",
-                        data=excel_file,
-                        file_name="Meta廣告異常分析報表.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-                    st.success("報表生成完畢！請點擊上方按鈕下載。")
-                except Exception as e:
-                    st.error(f"生成失敗: {e}")
 else:
     st.info("請上傳檔案以開始分析。")
